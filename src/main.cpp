@@ -4,6 +4,7 @@
 #include <glm/gtx/matrix_transform_2d.hpp> // pour rotate()
 #include <algorithm> // pour sort(), max_element(), min_element()
 #include <complex> // pour les nb complexes
+#include <cassert> // pour les assert
 #include "random.hpp"
 
 /* VARIABLES GLOBALES */
@@ -517,7 +518,7 @@ float map(float value, float current_min, float current_max, float desired_min, 
 
 void mandelbrot_fractal(sil::Image& image)
 {
-    int max_iter {100}; // nb maximum d'itérations pour le calcul de z
+    const int max_iter {100}; // nb maximum d'itérations pour le calcul de z
 
     for (int x {0}; x < image.width(); ++x)
     {
@@ -803,22 +804,191 @@ void vortex(sil::Image& image)
     }
 }
 
-void convolution(sil::Image& image)
+void convolution(sil::Image& image, glm::mat3 kernel)
 {
-    // kernel 3*3 1/9 (flou): 
-    glm::mat3 blur_kernel {glm::mat3(1.0f / 9.0f)}; 
+    sil::Image copy {image};
 
-    for (int x = 0; x < image.width(); x++)
+   for (int x = 1; x < image.width()-1; x++)
     {
-        for (int y = 0; y < image.height(); y++)
+        for (int y = 1; y < image.height()-1; y++)
         {
-    
-            // gestion des trucs qui dépasse : on prend la valeur de pixel dans le truc (qui sort pas) la plus proche
+            // récupération des coordonnées des voisins : j'avais fais ça pour que ça soit plus clair mais comme on peut pas passer de glm::vec2 en paramètre de image.pixel() ça ne sert à rien ; je laisse quand même pour la compréhension
+            // glm::vec2 top_l {x-1, y+1};
+            // glm::vec2 top_r {x+1, y+1};
+            // glm::vec2 top {x, y+1};
+            // glm::vec2 l {x-1, y};
+            // glm::vec2 r {x+1, y};
+            // glm::vec2 bottom_l {x-1, y-1};
+            // glm::vec2 bottom {x, y-1};
+            // glm::vec2 bottom_r {x+1, y-1};
 
-            if (x == 0 || y ==0)
+            // la nouvelle valeur du pixel est la somme des valeurs de ses voisins pondérées par les coefficients de la matrice blur_kernel
+            copy.pixel(x,y) = 
+                image.pixel(x, y)*kernel[1][1] +
+                image.pixel(x-1, y+1)*kernel[0][0] + 
+                image.pixel(x+1, y+1) * kernel[2][0] + 
+                image.pixel(x, y+1) * kernel[1][0] + 
+                image.pixel(x-1, y) * kernel[0][1] + 
+                image.pixel(x+1, y) * kernel[2][1] + 
+                image.pixel(x-1, y-1) * kernel[0][2] + 
+                image.pixel(x, y-1) * kernel[1][2] + 
+                image.pixel(x+1, y-1) * kernel[2][2];
+
+        }
+    }
+
+    // gestion des bords : prendre les voisins qui sont dans l'image
+
+    // à y fixe : haut et bas
+    for (int x = 1; x < image.width()-1; x++)
+    {
+        // bord du haut (y = 0)
+        copy.pixel(x, 0) = 
+            image.pixel(x-1, 0) * kernel[0][1] + 
+            image.pixel(x, 0) * kernel[1][1] + 
+            image.pixel(x+1, 0) * kernel[2][1] + 
+            image.pixel(x-1, 1) * kernel[0][0] + 
+            image.pixel(x, 1) * kernel[1][0] + 
+            image.pixel(x+1, 1) * kernel[2][0];
+
+        // bord du bas (y = height-1)
+        int y = image.height()-1;
+        copy.pixel(x, image.height()-1) = 
+            image.pixel(x-1, y) * kernel[0][1] + 
+            image.pixel(x, y) * kernel[1][1] + 
+            image.pixel(x+1, y) * kernel[2][1] + 
+            image.pixel(x-1, y-1) * kernel[0][2] + 
+            image.pixel(x, y-1) * kernel[1][2] + 
+            image.pixel(x+1, y-1) * kernel[2][2];
+    }
+
+    // à x fixe : gauche et droite
+    for (int y = 1; y < image.height()-1; y++)
+    {
+        // bord gauche (x = 0)
+        copy.pixel(0, y) = 
+            image.pixel(0, y-1) * kernel[1][2] + 
+            image.pixel(0, y) * kernel[1][1] + 
+            image.pixel(0, y+1) * kernel[1][0] + 
+            image.pixel(1, y-1) * kernel[2][2] + 
+            image.pixel(1, y) * kernel[2][1] + 
+            image.pixel(1, y+1) * kernel[2][0];
+
+        // bord droit (x = width-1)
+        int x = image.width()-1;
+        copy.pixel(x, y) = 
+            image.pixel(x, y-1) * kernel[1][2] + 
+            image.pixel(x, y) * kernel[1][1] + 
+            image.pixel(x, y+1) * kernel[1][0] + 
+            image.pixel(x-1, y-1) * kernel[0][2] + 
+            image.pixel(x-1, y) * kernel[0][1] + 
+            image.pixel(x-1, y+1) * kernel[0][0];
+    }
+
+    image = copy;
+}
+
+glm::vec3 calculate_centroid(std::vector<glm::vec3>& cluster)
+{
+    assert(cluster.size() != 0); // on vérifie que la liste des elements du cluster n'est pas vide pour ne pas avoir une division par 0 dans le return
+
+    // on calcule le centroide du cluster en faisant la moyenne des points : 
+    glm::vec3 sum {0};
+
+    for(glm::vec3& color : cluster)
+    {
+        sum += color;
+    }
+
+    return sum/static_cast<float>(cluster.size());
+}
+
+void k_means(sil::Image& image, const int k)
+{
+    // INIT : 
+    std::vector<glm::vec3> centroids {};
+
+    // on génère aléatoirement k centroides de départ (des valeurs de couleurs random choisies parmis celles de l'image)
+    for (int i = 0; i < k; i++) 
+    {
+        int random_x = random_int(0, image.width());
+        int random_y = random_int(0, image.height());
+
+        centroids.push_back(image.pixel(random_x, random_y));
+    }
+
+    bool converge {false}; // va permettre de sortir de la boucle while si on a convergence des clusters
+
+    std::vector<std::vector<glm::vec3>> clusters {}; // tableau de tableaux de pixels
+    std::vector<std::vector<glm::vec2>> cluster_elt_positions {}; // tableau des positions des pixels (des elements des clusters)
+    // les positions dans cluster_elt_positions seront rangées dans le même ordre que leurs points (pixels) associés dans les tableaux de clusters
+    
+    // on donne la bonne taille aux tableaux (sert pour quand on va clear les tableaux) :
+    clusters.resize(k);
+    cluster_elt_positions.resize(k);
+
+    while (!converge)
+    {
+        // on clear les tableaux comme on utilise des std::vector et que l'on va push_back() des élements dedans à chaque fois, au nouveau tour de boucle on doit revenir à des tableaux vides
+        for (int i = 0; i < k; i++) 
+        {
+            clusters[i].clear();
+            cluster_elt_positions[i].clear();
+        }
+
+        // pour chaque point/pixel : 
+        for (int x = 0; x < image.width(); x++)
+        {
+            for (int y = 0; y < image.height(); y++)
             {
-                image.pixel(x,y) = 
+                int closest_index {0};
+
+                float min_distance {glm::distance(image.pixel(x,y), centroids[0])}; // on initialise la distance minimale à la distance du pixel actuel au premier centroide
+
+                for (int i = 1; i < k; i++) // on parcourt les autres centroides
+                {
+                    float distance {glm::distance(image.pixel(x,y), centroids[i])}; // on calcule la distance du point aux autres centroides
+
+                    // on cherche la distance minimum du point à un des centroides pour trouver le centroide le plus proche du point actuel
+                    if (distance < min_distance)
+                    {
+                        min_distance = distance;
+                        closest_index = i;
+                    }
+
+                    clusters[closest_index].push_back(image.pixel(x,y)); // on ajoute le pixel dans le cluster correspond
+                    cluster_elt_positions[closest_index].push_back(glm::vec2{x,y}); // idem pour la position du point 
+                }
             }
+        }
+
+        // à partir des nouveaux clusters, on recalcule les centroides : 
+        std::vector<glm::vec3> new_centroids;
+
+        for (int j = 0; j < k; j++)
+        {
+            new_centroids.push_back(calculate_centroid(clusters[j])); // on ajoute le nouveau centroid dans la liste des nouveaux centroides
+        }
+
+        // on regarde s'il y a convergence : 
+        if (new_centroids == centroids)
+        {
+            converge = true;
+        }
+        else
+        {
+            centroids = new_centroids;
+        }
+    }
+
+    // à la fin de la boucle while, les clusters et centroides sont déterminés car il y a convergence
+
+    // on modifie l'image pour lui donner les nouvelles couleurs obtenues avec l'algorithme : 
+    for (int i {0}; i < cluster_elt_positions.size(); i++)
+    {
+        for(glm::vec2& position : cluster_elt_positions[i])
+        {
+            image.pixel(position.x, position.y) = centroids[i];
         }
     }
 }
@@ -863,9 +1033,9 @@ int main()
     // }
 
     // {
-    //      sil::Image image{"images/logo.png"};
-    //      rotate90(image);
-    //      image.save("output/rotate90.png"); 
+    //       sil::Image image{"images/logo.png"};
+    //       rotate90(image);
+    //       image.save("output/rotate90.png"); 
     // }
 
     // {
@@ -974,4 +1144,76 @@ int main()
     //     vortex(image);
     //     image.save("output/vortex.png"); 
     // }
+
+    // { 
+    //     glm::mat3 blur_kernel {glm::mat3(1.0f / 9.0f)}; // kernel 3*3 1/9 (flou):
+
+    //     sil::Image image{"images/logo.png"};
+    //     convolution(image, blur_kernel);
+    //     image.save("output/blur_convolution.png"); 
+    // }
+
+    // { 
+    //     glm::mat3 emboss_kernel
+    //     {
+    //         -2, -1, 0,
+    //         -1, 1, 1,
+    //         0, 1, 2
+    //     };
+
+    //     sil::Image image{"images/logo.png"};
+    //     convolution(image, emboss_kernel);
+    //     image.save("output/emboss_convolution.png"); 
+    // }
+
+    // { 
+    //     glm::mat3 outline_kernel
+    //     {
+    //         -1, -1, -1,
+    //         -1,  8, -1,
+    //         -1, -1, -1
+    //     };
+
+    //     sil::Image image{"images/logo.png"};
+    //     convolution(image, outline_kernel);
+    //     image.save("output/outline_convolution.png"); 
+    // }
+
+    // { 
+    //     glm::mat3 sharpen_kernel
+    //     {
+    //         0, -1, 0,
+    //         -1,  5, -1,
+    //         0, -1, 0
+    //     };
+
+    //     sil::Image image{"images/logo.png"};
+    //     convolution(image, sharpen_kernel);
+    //     image.save("output/sharpen_convolution.png"); 
+    // }
+
+    { 
+        sil::Image image{"images/photo.jpg"};
+        k_means(image, 3);
+        image.save("output/k_means_3.png"); 
+    }
+
+    { 
+        sil::Image image{"images/photo.jpg"};
+        k_means(image, 5);
+        image.save("output/k_means_5.png"); 
+    }
+
+    { 
+        sil::Image image{"images/logo.png"};
+        effet_random(image);
+        image.save("output/effet_random.png"); 
+    }
+
+    {
+        sil::Image image{"images/ma_photo.jpg"};
+        pixels_sorting(image);
+        image.save("output/pixels_sorting_test.png"); 
+    }
+
 }
